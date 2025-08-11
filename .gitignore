@@ -46,7 +46,6 @@ node_modules/
 
 # Environment files
 .env
-.env.*
 !.env.example
 
 # Editors and IDEs
