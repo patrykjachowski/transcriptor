@@ -1,0 +1,16 @@
+{
+  "name": "transcriptor-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "transcriptor": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "transcribe": "node src/index.js"
+  },
+  "dependencies": {
+    "openai": "^4.58.1"
+  }
+}
