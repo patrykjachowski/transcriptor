@@ -1,4 +1,4 @@
-# Transcriptor CLI
+# Transcriptor CLI (MVP)
 
 A tiny CLI to download a video, extract audio, and transcribe it to text using OpenAI.
 
