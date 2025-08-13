@@ -156,9 +156,9 @@ async function downloadVideo(url, workDir) {
   return path.join(workDir, files[0]);
 }
 
-async function extractAudio(inputVideoPath, outputAudioPath) {
+async function extractAudio(inputVideoPath, outputAudioPath, bitrateKbps = 24) {
   console.log('2/5 Extracting audio (ffmpeg)...');
-  // PCM WAV mono 16k – transcription-friendly format
+  // Encode to Opus OGG mono 16k at a low bitrate to keep size small for API limits
   const args = [
     '-y',
     '-i',
@@ -168,8 +168,10 @@ async function extractAudio(inputVideoPath, outputAudioPath) {
     '-ar',
     '16000',
     '-vn',
-    '-f',
-    'wav',
+    '-c:a',
+    'libopus',
+    '-b:a',
+    `${bitrateKbps}k`,
     outputAudioPath,
   ];
   await run('ffmpeg', args);
@@ -234,11 +236,40 @@ async function transcribeAudio(openai, audioPath) {
   return text;
 }
 
+function getFileSize(pathname) {
+  try {
+    const st = fs.statSync(pathname);
+    return st.size;
+  } catch {
+    return 0;
+  }
+}
+
+async function ensureAudioUnderLimit(inputPath, limitBytes = 26214400) {
+  // If already small enough, return as-is
+  let size = getFileSize(inputPath);
+  if (size > 0 && size <= limitBytes) return inputPath;
+
+  // Try to recompress at a lower bitrate
+  const dir = path.dirname(inputPath);
+  const base = path.basename(inputPath, path.extname(inputPath));
+  const tmpOut = path.join(dir, `${base}.recompressed.ogg`);
+
+  console.log('Audio exceeds API size limit. Recompressing at 16 kbps...');
+  await extractAudio(inputPath, tmpOut, 16);
+
+  const newSize = getFileSize(tmpOut);
+  if (newSize > 0 && newSize <= limitBytes) {
+    return tmpOut;
+  }
+
+  throw new Error(`Audio still exceeds size limit after recompression: ${(newSize / (1024 * 1024)).toFixed(2)} MB (limit ${(limitBytes / (1024 * 1024)).toFixed(2)} MB). Consider a shorter clip.`);
+}
+
 function buildOutputBlock({ titleIfProvided, summary, transcript }) {
   const lines = [];
   if (titleIfProvided) {
     lines.push(`## ${titleIfProvided}`);
-    lines.push('');
   }
   // Put Transcript first with an emoji
   lines.push('### 📖 Transcript');
@@ -277,12 +308,15 @@ async function main() {
     // 1. Download video
     const videoPath = await downloadVideo(videoUrl, workDir);
 
-    // 2. Extract audio
-    const audioPath = path.join(workDir, 'audio.wav');
+    // 2. Extract audio (compressed to OGG/Opus)
+    let audioPath = path.join(workDir, 'audio.ogg');
     await extractAudio(videoPath, audioPath);
 
+    // 2b. Ensure under API size limit (25 MiB)
+    const limitedAudioPath = await ensureAudioUnderLimit(audioPath, 26214400);
+
     // 3. Transcription
-    const transcript = await transcribeAudio(openai, audioPath);
+    const transcript = await transcribeAudio(openai, limitedAudioPath);
 
     // 4. Summarization
     console.log('4/5 Summarizing (OpenAI)...');
