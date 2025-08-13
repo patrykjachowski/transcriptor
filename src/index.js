@@ -240,11 +240,13 @@ function buildOutputBlock({ titleIfProvided, summary, transcript }) {
     lines.push(`## ${titleIfProvided}`);
     lines.push('');
   }
-  lines.push('### Summary');
-  lines.push(summary || '(none)');
-  lines.push('');
-  lines.push('### Transcript');
+  // Put Transcript first with an emoji
+  lines.push('### 📖 Transcript');
   lines.push(transcript);
+  lines.push('');
+  // Then Summary with an emoji
+  lines.push('### 📋 Summary');
+  lines.push(summary || '(none)');
   lines.push('');
   return lines.join('\n');
 }
