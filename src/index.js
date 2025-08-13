@@ -305,7 +305,11 @@ async function main() {
       fs.writeFileSync(outFile, block + '\n', { flag: 'w', encoding: 'utf8' });
     }
 
-    console.log('Done! Output saved to:', outFile);
+    if (customTitle) {
+      console.log(`Done! Output with title '${customTitle}' saved to: ${outFile}`);
+    } else {
+      console.log('Done! Output saved to:', outFile);
+    }
   } catch (err) {
     console.error('Error:', err.message || err);
     process.exit(1);
