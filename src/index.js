@@ -11,15 +11,16 @@ import OpenAI from 'openai';
 
 /**
  * Transcriptor CLI
- * - Accepts a video URL as a positional argument.
+ * - Accepts a video URL or local file path as a positional argument.
  * - If --continue is passed, appends the new transcript to transcript.txt, separated by a line.
  * - Without --continue, it will fail if transcript.txt already exists (no prompts).
  *
  * Usage:
- *   npm run transcribe -- [--continue] [--title "<custom_title>"] "<video_url>"
+ *   npm run transcribe -- [--continue] [--title "<custom_title>"] "<video_url_or_path>"
  *
  * Note: When running via npm scripts, pass flags after a double dash:
  *   npm run transcribe -- --continue "https://example.com/video"
+ *   npm run transcribe -- --continue "./videos/my-video.mp4"
  */
 
 const args = process.argv.slice(2);
@@ -46,8 +47,8 @@ function getOption(longName, shortName) {
 // Custom title from CLI
 const customTitle = getOption('--title', '-t');
 
-// Determine the video URL while skipping the value provided for --title/-t
-const videoUrl = (() => {
+// Determine the video URL or file path while skipping the value provided for --title/-t
+const videoInput = (() => {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith('-')) continue;
@@ -58,12 +59,13 @@ const videoUrl = (() => {
   return null;
 })();
 
-if (!videoUrl) {
+if (!videoInput) {
   console.error(
 'Usage:\n' +
-      '  npm run transcribe -- [--continue|-c] [--title "\u003ccustom_title\u003e"] "\u003cvideo_url\u003e"\n\n' +
+      '  npm run transcribe -- [--continue|-c] [--title "\u003ccustom_title\u003e"] "\u003cvideo_url_or_path\u003e"\n\n' +
       'Examples:\n' +
       '  npm run transcribe -- "https://example.com/video"\n' +
+      '  npm run transcribe -- "./videos/my-video.mp4"\n' +
       '  npm run transcribe -- --continue --title "My title" "https://example.com/video"'
   );
   process.exit(1);
@@ -124,6 +126,16 @@ async function ensureBinary(cmd, versionArg = ['--version']) {
   }
 }
 
+function isLocalFile(input) {
+  // Check if input looks like a file path (not a URL)
+  return !input.match(/^https?:\/\//i) && (
+    input.startsWith('/') ||
+    input.startsWith('./') ||
+    input.startsWith('../') ||
+    input.match(/^[a-zA-Z]:[\\\/]/) // Windows absolute path
+  );
+}
+
 async function getRemoteTitle(url) {
   try {
     const { stdout } = await run('yt-dlp', ['-e', url]);
@@ -132,6 +144,13 @@ async function getRemoteTitle(url) {
   } catch {
     return null;
   }
+}
+
+async function getLocalTitle(filePath) {
+  // Extract title from filename without extension
+  const basename = path.basename(filePath);
+  const title = basename.replace(/\.[^.]+$/, '');
+  return title || null;
 }
 
 async function downloadVideo(url, workDir) {
@@ -154,6 +173,25 @@ async function downloadVideo(url, workDir) {
   const files = fs.readdirSync(workDir).filter((f) => f.startsWith('video.'));
   if (!files.length) throw new Error('Failed to identify the downloaded video file.');
   return path.join(workDir, files[0]);
+}
+
+async function prepareLocalVideo(filePath, workDir) {
+  console.log('1/5 Preparing local video file...');
+
+  // Resolve to absolute path
+  const absolutePath = path.resolve(filePath);
+
+  // Check if file exists
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`Local video file not found: ${absolutePath}`);
+  }
+
+  // Copy file to work directory to maintain consistent workflow
+  const ext = path.extname(absolutePath);
+  const destPath = path.join(workDir, `video${ext}`);
+  fs.copyFileSync(absolutePath, destPath);
+
+  return destPath;
 }
 
 async function extractAudio(inputVideoPath, outputAudioPath, bitrateKbps = 24) {
@@ -283,8 +321,13 @@ function buildOutputBlock({ titleIfProvided, summary, transcript }) {
 }
 
 async function main() {
+  // Check if input is a local file or URL
+  const isLocal = isLocalFile(videoInput);
+
   // Required CLI tools
-  await ensureBinary('yt-dlp');
+  if (!isLocal) {
+    await ensureBinary('yt-dlp');
+  }
   // ffmpeg uses single-dash options; use -version instead of --version
   await ensureBinary('ffmpeg', ['-version']);
 
@@ -300,13 +343,17 @@ async function main() {
   }
 
   // Prepare working directory
-  const suggestTitle = customTitle || (await getRemoteTitle(videoUrl)) || `Transcription ${new Date().toISOString().slice(0, 19)}`;
+  const suggestTitle = customTitle ||
+    (isLocal ? (await getLocalTitle(videoInput)) : (await getRemoteTitle(videoInput))) ||
+    `Transcription ${new Date().toISOString().slice(0, 19)}`;
   const workDir = path.join(tmpRoot, `${slugify(suggestTitle)}-${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
 
   try {
-    // 1. Download video
-    const videoPath = await downloadVideo(videoUrl, workDir);
+    // 1. Download or prepare video
+    const videoPath = isLocal
+      ? await prepareLocalVideo(videoInput, workDir)
+      : await downloadVideo(videoInput, workDir);
 
     // 2. Extract audio (compressed to OGG/Opus)
     let audioPath = path.join(workDir, 'audio.ogg');
