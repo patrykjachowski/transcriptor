@@ -7,8 +7,8 @@
     "transcriptor": "src/index.js"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "transcribe": "node src/index.js"
+    "start": "node --env-file=.env src/index.js",
+    "transcribe": "node --env-file=.env src/index.js"
   },
   "dependencies": {
     "openai": "^4.58.1"

@@ -4,8 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 
-// If you use a .env file, uncomment the line below and ensure the "dotenv" package is installed
-// import 'dotenv/config';
+// .env file is loaded automatically via Node's --env-file flag in package.json
 
 import OpenAI from 'openai';
 
