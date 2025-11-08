@@ -308,13 +308,13 @@ function buildOutputBlock({ titleIfProvided, summary, transcript }) {
   if (titleIfProvided) {
     lines.push(`## ${titleIfProvided}`);
   }
-  // Put Transcript first with an emoji
-  lines.push('### 📖 Transcript');
-  lines.push(transcript);
-  lines.push('');
-  // Then Summary with an emoji
-  lines.push('### 📋 Summary');
+  // Put Summary first with an emoji
+  lines.push('### 📋 Podsumowanie');
   lines.push(summary || '(none)');
+  lines.push('');
+  // Then Transcript with an emoji
+  lines.push('### 📖 Transkrypt');
+  lines.push(transcript);
   lines.push('');
   return lines.join('\n');
 }
