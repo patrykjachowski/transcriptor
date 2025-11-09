@@ -79,7 +79,7 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
-// ===== Implementation steps 1–5 =====
+// ===== Implementation steps 1–6 =====
 const outFile = path.resolve(process.cwd(), 'transcript.txt');
 const tmpRoot = path.join(os.tmpdir(), 'transcriptor-cli');
 
@@ -165,7 +165,7 @@ async function downloadVideo(url, workDir) {
   // Quiet logging without losing errors
   args.push('--no-warnings', '-q');
 
-  console.log('1/5 Downloading video (yt-dlp)...');
+  console.log('1/6 Downloading video (yt-dlp)...');
   await run('yt-dlp', args);
 
   // Find the downloaded file matching "video.*"
@@ -175,7 +175,7 @@ async function downloadVideo(url, workDir) {
 }
 
 async function prepareLocalVideo(filePath, workDir) {
-  console.log('1/5 Preparing local video file...');
+  console.log('1/6 Preparing local video file...');
 
   // Resolve to absolute path
   const absolutePath = path.resolve(filePath);
@@ -194,7 +194,7 @@ async function prepareLocalVideo(filePath, workDir) {
 }
 
 async function extractAudio(inputVideoPath, outputAudioPath, bitrateKbps = 24) {
-  console.log('2/5 Extracting audio (ffmpeg)...');
+  console.log('2/6 Extracting audio (ffmpeg)...');
   // Encode to Opus OGG mono 16k at a low bitrate to keep size small for API limits
   const args = [
     '-y',
@@ -218,6 +218,41 @@ function chunkString(str, size) {
   const chunks = [];
   for (let i = 0; i < str.length; i += size) chunks.push(str.slice(i, i + size));
   return chunks;
+}
+
+async function formatText(openai, text) {
+  // Format the text by adding paragraph breaks for readability
+  // No additional phrases, no cutting content - only splitting into paragraphs
+  const model = 'gpt-4o-mini';
+  const maxChunk = 15000; // characters; safe context buffer
+
+  if (text.length <= maxChunk) {
+    const r = await openai.chat.completions.create({
+      model,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: 'You are a text formatter. Your only task is to add paragraph breaks (newlines) to make the text easier to read. DO NOT add, remove, or change any words. DO NOT add any phrases or commentary. Only add line breaks where natural paragraph breaks should occur. Return the exact same text with only whitespace modifications.' },
+        { role: 'user', content: `Format this text by adding paragraph breaks for readability. Do not change any words:\n\n${text}` },
+      ],
+    });
+    return (r.choices?.[0]?.message?.content || '').trim();
+  }
+
+  // For very long transcripts, process in chunks
+  const chunks = chunkString(text, maxChunk);
+  const formatted = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const r = await openai.chat.completions.create({
+      model,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: 'You are a text formatter. Your only task is to add paragraph breaks (newlines) to make the text easier to read. DO NOT add, remove, or change any words. DO NOT add any phrases or commentary. Only add line breaks where natural paragraph breaks should occur. Return the exact same text with only whitespace modifications.' },
+        { role: 'user', content: `Format this text by adding paragraph breaks for readability. Do not change any words:\n\n${chunks[i]}` },
+      ],
+    });
+    formatted.push((r.choices?.[0]?.message?.content || '').trim());
+  }
+  return formatted.join('\n\n');
 }
 
 async function summarizeText(openai, text, langPrompt = 'in Polish') {
@@ -262,7 +297,7 @@ async function summarizeText(openai, text, langPrompt = 'in Polish') {
 }
 
 async function transcribeAudio(openai, audioPath) {
-  console.log('3/5 Transcription (OpenAI Whisper)...');
+  console.log('3/6 Transcription (OpenAI Whisper)...');
   const res = await openai.audio.transcriptions.create({
     file: fs.createReadStream(audioPath),
     model: 'whisper-1',
@@ -364,16 +399,20 @@ async function main() {
     // 3. Transcription
     const transcript = await transcribeAudio(openai, limitedAudioPath);
 
-    // 4. Summarization
-    console.log('4/5 Summarizing (OpenAI)...');
-    const summary = await summarizeText(openai, transcript, 'in Polish');
+    // 4. Format text for readability
+    console.log('4/6 Formatting text (OpenAI)...');
+    const formattedTranscript = await formatText(openai, transcript);
 
-    // 5. Write to transcript.txt
-    console.log('5/5 Writing to transcript.txt...');
+    // 5. Summarization
+    console.log('5/6 Summarizing (OpenAI)...');
+    const summary = await summarizeText(openai, formattedTranscript, 'in Polish');
+
+    // 6. Write to transcript.txt
+    console.log('6/6 Writing to transcript.txt...');
     const block = buildOutputBlock({
       titleIfProvided: customTitle || null,
       summary,
-      transcript,
+      transcript: formattedTranscript,
     });
 
     if (shouldContinue && fs.existsSync(outFile)) {

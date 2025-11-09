@@ -40,7 +40,7 @@ npm run transcribe -- --continue --title "My Session" "https://example.com/video
 
 ## Architecture
 
-The tool follows a linear 5-step pipeline implemented in `src/index.js`:
+The tool follows a linear 6-step pipeline implemented in `src/index.js`:
 
 1. **Video Download** (`downloadVideo`)
    - Uses yt-dlp to download video to temp directory
@@ -61,14 +61,22 @@ The tool follows a linear 5-step pipeline implemented in `src/index.js`:
    - Calls OpenAI Whisper API with audio file
    - Uses `temperature: 0` for deterministic output
 
-5. **Summarization** (`summarizeText`)
+5. **Text Formatting** (`formatText`)
+   - Uses GPT-4o-mini to add paragraph breaks for readability
+   - Does NOT add, remove, or modify any words
+   - Only adds whitespace (newlines) to split text into paragraphs
+   - Chunks large transcripts (>15k chars) for safety
+   - Uses `temperature: 0` for deterministic output
+
+6. **Summarization** (`summarizeText`)
    - Uses GPT-4o-mini to create bulleted summary
+   - Works on the formatted transcript
    - Chunks large transcripts (>15k chars) for safety
    - Produces final merged summary from partial summaries
    - Default language: Polish (hardcoded in `langPrompt`)
 
-6. **Output** (`buildOutputBlock`)
-   - Formats as: Title (optional) → Transcript → Summary
+7. **Output** (`buildOutputBlock`)
+   - Formats as: Title (optional) → Summary → Formatted Transcript
    - Writes to `transcript.txt` in current working directory
    - `--continue` mode appends with `---` separator
 
