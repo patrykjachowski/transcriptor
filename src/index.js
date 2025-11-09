@@ -10,16 +10,24 @@ import OpenAI from 'openai';
 
 /**
  * Transcriptor CLI
- * - Accepts a video URL or local file path as a positional argument.
- * - If --continue is passed, appends the new transcript to transcript.txt, separated by a line.
- * - Without --continue, it will fail if transcript.txt already exists (no prompts).
+ * - Two modes: single file or batch queue
  *
- * Usage:
+ * BATCH MODE (Default):
+ *   If no video argument provided, processes all .mp4 files in ./videos folder
+ *   Skips files that are already transcribed or have existing output files
+ *   Processes one by one sequentially
+ *
+ * SINGLE FILE MODE:
  *   npm run transcribe -- [--continue] [--title "<custom_title>"] "<video_url_or_path>"
+ *   - Output filename is determined by: custom title > remote/local filename > timestamp
+ *   - If --continue is passed, appends to existing file with that name
+ *   - Without --continue, it will fail if the output file already exists
  *
- * Note: When running via npm scripts, pass flags after a double dash:
- *   npm run transcribe -- --continue "https://example.com/video"
- *   npm run transcribe -- --continue "./videos/my-video.mp4"
+ * Examples:
+ *   npm run transcribe                                      → processes ./videos/*.mp4
+ *   npm run transcribe -- "https://example.com/video"      → single file, uses remote title
+ *   npm run transcribe -- "./my-video.mp4"                 → single file, outputs to my-video.txt
+ *   npm run transcribe -- --title "Session 1" "url"        → outputs to session-1.txt
  */
 
 const args = process.argv.slice(2);
@@ -58,17 +66,8 @@ const videoInput = (() => {
   return null;
 })();
 
-if (!videoInput) {
-  console.error(
-'Usage:\n' +
-      '  npm run transcribe -- [--continue|-c] [--title "\u003ccustom_title\u003e"] "\u003cvideo_url_or_path\u003e"\n\n' +
-      'Examples:\n' +
-      '  npm run transcribe -- "https://example.com/video"\n' +
-      '  npm run transcribe -- "./videos/my-video.mp4"\n' +
-      '  npm run transcribe -- --continue --title "My title" "https://example.com/video"'
-  );
-  process.exit(1);
-}
+// If no videoInput is provided and no OPENAI_API_KEY, show early error
+// Otherwise will proceed to batch mode or validate single file mode later
 
 if (!process.env.OPENAI_API_KEY) {
   console.error(
@@ -80,7 +79,6 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 // ===== Implementation steps 1–6 =====
-const outFile = path.resolve(process.cwd(), 'transcript.txt');
 const tmpRoot = path.join(os.tmpdir(), 'transcriptor-cli');
 
 // Safe working directory name derived from title or timestamp
@@ -150,6 +148,80 @@ async function getLocalTitle(filePath) {
   const basename = path.basename(filePath);
   const title = basename.replace(/\.[^.]+$/, '');
   return title || null;
+}
+
+/**
+ * Generate output filename based on title or video input
+ * Priority: customTitle > remoteTitle/localTitle > fallback timestamp
+ */
+async function generateOutputFilename(titleOverride, videoInput, isLocal) {
+  let filename;
+
+  if (titleOverride) {
+    // Use custom title if provided
+    filename = slugify(titleOverride);
+  } else if (isLocal) {
+    // Use local filename without extension
+    const basename = path.basename(videoInput);
+    filename = basename.replace(/\.[^.]+$/, '') || 'transcription';
+  } else {
+    // Try to get remote title, fallback to timestamp
+    const remoteTitle = await getRemoteTitle(videoInput);
+    filename = remoteTitle ? slugify(remoteTitle) : `transcription-${Date.now()}`;
+  }
+
+  // Return with .txt extension
+  return `${filename}.txt`;
+}
+
+/**
+ * Scan ./videos folder for all .mp4 files
+ * Returns array of absolute paths to .mp4 files
+ */
+function getVideosFromQueue() {
+  const videosDir = path.resolve(process.cwd(), 'videos');
+
+  // Check if videos directory exists
+  if (!fs.existsSync(videosDir)) {
+    return [];
+  }
+
+  try {
+    const files = fs.readdirSync(videosDir);
+    return files
+      .filter(f => f.toLowerCase().endsWith('.mp4'))
+      .map(f => path.join(videosDir, f))
+      .sort(); // Sort for consistent order
+  } catch (err) {
+    console.error(`Error reading videos directory: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Check if a video file has already been transcribed
+ * Returns true if transcription file exists
+ */
+function isAlreadyTranscribed(videoPath) {
+  const basename = path.basename(videoPath);
+  const filenameWithoutExt = basename.replace(/\.[^.]+$/, '');
+  const transcriptPath = path.resolve(process.cwd(), `${filenameWithoutExt}.txt`);
+  return fs.existsSync(transcriptPath);
+}
+
+/**
+ * Build a queue of videos to transcribe
+ * Filters out already transcribed videos
+ */
+function buildTranscribeQueue(videoFiles) {
+  return videoFiles.filter(videoPath => {
+    if (isAlreadyTranscribed(videoPath)) {
+      const basename = path.basename(videoPath);
+      console.log(`⏭️  Skipping ${basename} (already transcribed)`);
+      return false;
+    }
+    return true;
+  });
 }
 
 async function downloadVideo(url, workDir) {
@@ -354,31 +426,28 @@ function buildOutputBlock({ titleIfProvided, summary, transcript }) {
   return lines.join('\n');
 }
 
-async function main() {
-  // Check if input is a local file or URL
-  const isLocal = isLocalFile(videoInput);
+/**
+ * Transcribe a single video file
+ * Used for both batch mode and single file mode
+ */
+async function transcribeSingleFile(videoInputPath, openai, titleOverride = null) {
+  const isLocal = isLocalFile(videoInputPath);
 
-  // Required CLI tools
-  if (!isLocal) {
-    await ensureBinary('yt-dlp');
-  }
-  // ffmpeg uses single-dash options; use -version instead of --version
-  await ensureBinary('ffmpeg', ['-version']);
+  // Generate output filename based on title or video input
+  const outputFilename = await generateOutputFilename(titleOverride, videoInputPath, isLocal);
+  const outFile = path.resolve(process.cwd(), outputFilename);
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-  // Output file check
-  if (!shouldContinue && fs.existsSync(outFile)) {
-    console.error(
-      `File ${path.basename(outFile)} already exists. Use --continue to append another transcription,\n` +
-        'or remove/move the existing file.'
-    );
-    process.exit(1);
+  // Output file check (in batch mode, skip instead of failing)
+  if (fs.existsSync(outFile)) {
+    if (!shouldContinue) {
+      console.log(`⏭️  Skipping (output file already exists: ${path.basename(outFile)})`);
+      return false;
+    }
   }
 
   // Prepare working directory
-  const suggestTitle = customTitle ||
-    (isLocal ? (await getLocalTitle(videoInput)) : (await getRemoteTitle(videoInput))) ||
+  const suggestTitle = titleOverride ||
+    (isLocal ? (await getLocalTitle(videoInputPath)) : (await getRemoteTitle(videoInputPath))) ||
     `Transcription ${new Date().toISOString().slice(0, 19)}`;
   const workDir = path.join(tmpRoot, `${slugify(suggestTitle)}-${Date.now()}`);
   fs.mkdirSync(workDir, { recursive: true });
@@ -386,8 +455,8 @@ async function main() {
   try {
     // 1. Download or prepare video
     const videoPath = isLocal
-      ? await prepareLocalVideo(videoInput, workDir)
-      : await downloadVideo(videoInput, workDir);
+      ? await prepareLocalVideo(videoInputPath, workDir)
+      : await downloadVideo(videoInputPath, workDir);
 
     // 2. Extract audio (compressed to OGG/Opus)
     let audioPath = path.join(workDir, 'audio.ogg');
@@ -407,10 +476,10 @@ async function main() {
     console.log('5/6 Summarizing (OpenAI)...');
     const summary = await summarizeText(openai, formattedTranscript, 'in Polish');
 
-    // 6. Write to transcript.txt
-    console.log('6/6 Writing to transcript.txt...');
+    // 6. Write to output file
+    console.log(`6/6 Writing to ${path.basename(outFile)}...`);
     const block = buildOutputBlock({
-      titleIfProvided: customTitle || null,
+      titleIfProvided: titleOverride || null,
       summary,
       transcript: formattedTranscript,
     });
@@ -424,14 +493,11 @@ async function main() {
       fs.writeFileSync(outFile, block + '\n', { flag: 'w', encoding: 'utf8' });
     }
 
-    if (customTitle) {
-      console.log(`Done! Output with title '${customTitle}' saved to: ${outFile}`);
-    } else {
-      console.log('Done! Output saved to:', outFile);
-    }
+    console.log('Done! Output saved to:', outFile);
+    return true;
   } catch (err) {
     console.error('Error:', err.message || err);
-    process.exit(1);
+    return false;
   } finally {
     // Optional cleanup (we keep working files on error for diagnostics)
     // If you want to always remove the working directory, uncomment below:
@@ -439,4 +505,62 @@ async function main() {
   }
 }
 
-main();
+async function main() {
+  // Required CLI tools
+  await ensureBinary('ffmpeg', ['-version']);
+  if (videoInput && !isLocalFile(videoInput)) {
+    await ensureBinary('yt-dlp');
+  }
+
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  // SINGLE FILE MODE: transcribe specific video
+  if (videoInput) {
+    console.log(`Processing: ${videoInput}\n`);
+    await transcribeSingleFile(videoInput, openai, customTitle);
+    return;
+  }
+
+  // BATCH MODE: process all .mp4 files in ./videos folder
+  console.log('🎬 Batch mode: scanning ./videos folder for .mp4 files...\n');
+
+  const allVideos = getVideosFromQueue();
+  if (allVideos.length === 0) {
+    console.log('No .mp4 files found in ./videos folder.');
+    return;
+  }
+
+  const queue = buildTranscribeQueue(allVideos);
+  if (queue.length === 0) {
+    console.log('All videos in ./videos folder are already transcribed.');
+    return;
+  }
+
+  console.log(`Found ${queue.length} video(s) to transcribe:\n`);
+  queue.forEach((v, i) => {
+    console.log(`  ${i + 1}. ${path.basename(v)}`);
+  });
+  console.log('');
+
+  // Process queue sequentially
+  let completed = 0;
+  for (let i = 0; i < queue.length; i++) {
+    const videoFile = queue[i];
+    const basename = path.basename(videoFile);
+    console.log(`\n[${i + 1}/${queue.length}] Processing: ${basename}`);
+    console.log('─'.repeat(50));
+
+    const success = await transcribeSingleFile(videoFile, openai);
+    if (success) {
+      completed++;
+    }
+  }
+
+  console.log(`\n${'═'.repeat(50)}`);
+  console.log(`✅ Batch complete: ${completed}/${queue.length} videos transcribed`);
+}
+
+main().catch(err => {
+  console.error('Fatal error:', err.message || err);
+  process.exit(1);
+});
